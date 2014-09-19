@@ -6,13 +6,9 @@ var btn = document.getElementById('btn');
 ws.onopen = function () {
     console.log('[open]');
 
-    btn.enable = true;
     btn.addEventListener('click', function () {
-        if (btn.disable) {
-            return;
-        }
         var value = document.getElementById('mes').value;
-        ws.send('abcdefghijklmnopqrstuvwsyz');
+        ws.send('y.toida');
         //ws.send(value);
     });
 
@@ -29,5 +25,4 @@ ws.onerror = function (err) {
 
 ws.onclose = function () {
     console.log('[close]');
-    btn.disable = true;
 };

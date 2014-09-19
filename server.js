@@ -79,6 +79,7 @@ server.on('request', function (req, res) {
     });
 });
 
+
 // クライアントからHTTP/1.1のUpgradeリクエスト受信時に発火
 server.on('upgrade', function (req, socket, head) {
     var key = req.headers['sec-websocket-key'];
@@ -103,54 +104,37 @@ server.on('upgrade', function (req, socket, head) {
     socket.write(responseHeader);
 
     // クライアント sendメソッドにより発火(バイナリ形式のデータフレームでやり取り)
-    socket.on('data', function (buf) {
-        // Bufferクラスはバイナリデータをオクテットストリームで扱う。16進数で格納
-        console.log(buf);
-        console.log('FrameSize ' + buf.length + 'byte');
+    socket.on('data', function (frame) {
+        console.log('');
+        console.log('--- frame ---');
+        console.log(frame);
         console.log('');
 
 
         console.log('--- 1byte ---');
-        var firstByte = buf[0];
+        var firstByte = frame[0];
 
-        // FIN : 最後のパケットなら 1, 続くなら 0
-        // 1byte目の最初の1bit
+        // [1byte] 1bit
         console.log('Fin[1] : ' + (firstByte & 0x80).toString(2));
 
-        // RSV1 ~ 3 予約済みビット
-        // 続く1bitづつ
+        // [1byte] 1bitづつ
         console.log('Rsv1[1] : ' + (firstByte & 0x40).toString(2));
         console.log('Rsv2[1] : ' + (firstByte & 0x20).toString(2));
         console.log('Rsv3[1] : ' + (firstByte & 0x10).toString(2));
 
-        // opode : PayloadDataの説明
-        // %x0  :continuation frame
-        // %x1  :text frame
-        // %x2  :binary frame
-        // %x3-7:reserved for further
-        // %x8  :connection close
-        // %x9  :ping
-        // %xA  :pong
-        // %xB-F:reserved for further
-        // 続く4bit
+        // [1byte] 4bit
         var opcode = firstByte & 0x0F;
         console.log('Opcode[4] : ' + opcode.toString(2));
-        console.log('-------------');
         console.log('');
 
 
         console.log('--- 2byte --- ');
-        var secondByte = buf[1];
+        var secondByte = frame[1];
 
-        // MASK : 1 ならPayload Data がマスクされている。されていなければ 0。Payload はブラウザが送るときは "必ずマスクする" サーバが送るときは "絶対にマスクしない"
-        // 2byte目の最初の1bit
+        // [2byte] 1bit
         console.log('Mask[1] : ' + (secondByte & 0x80).toString(2));
 
-        // PayLoad 長
-        // 0-125:そのままそれが Payload の長さ
-        // 126  :それより長いから、後続の 16bit が UInt16 として Payload の長さを表す
-        // 127  :それよりも長いから、後続の 64bit が UInt64 として Payload の長さを表す
-        // 続く7, 7+16, 7+64 bitのいずれか
+        // [2byte] 7, 7+16, 7+64 bitのいずれか
         var payloadLength = secondByte & 0x7F;
         console.log('PayloadLength[7] : ' + payloadLength + 'byte');
 
@@ -166,43 +150,70 @@ server.on('upgrade', function (req, socket, head) {
 
 
         console.log('--- 3byte ~ 6byte ---');
-        // Masking-key
-        // MASK=1 だった場合は必ず付与される、後で Payload を複合するのに使う。
-        // 3byte ~ 6byte の32bit
-        var maskBuf = buf.slice(2, 6);
-        console.log('MaskKey[32] : ');
-        console.log(maskBuf);
+        // [3byte ~ 6byte] 32bit
+        var maskKey = frame.slice(2, 6);
+        console.log('Masking-key[32] : ');
+        console.log(maskKey);
         console.log('');
 
 
         console.log('--- 7byte ~ end ---');
-        // PayloadData
-        // 7byte ~ 最後までがPayloadDataとなる
-        var payload = buf.slice(6, buf.length);
-        console.log('Payload : ');
+        // [7byte ~ 最後まで] PayloadData
+        var payload = frame.slice(6, frame.length);
+        console.log('Payload[' + (payloadLength * 8) + '] :');
         console.log(payload);
 
-        var maskNum = maskBuf.readUInt32BE(0, true);
-        var i = 0;
-        for (; i < payloadLength - 3; i += 4) {
-            var single = maskNum ^ payload.readUInt32BE(i, true);
-            if (single < 0) single = 4294967296 + single;
-            payload.writeUInt32BE(single, i, true);
-        }
-
-        switch (payloadLength % 4) {
-            case 3: payload[i + 2] = payload[i + 2] ^ maskBuf[2];
-            case 2: payload[i + 1] = payload[i + 1] ^ maskBuf[1];
-            case 1: payload[i] = payload[i] ^ maskBuf[0];
-            case 0:;
-        }
-
-        // Masking-Keyでunmaskした値
+        var unmaskedPayload = unmask(maskKey, payloadLength, payload);
+        // unmaskしたPayload
         console.log('UnmaskedPayload : ');
-        console.log(payload);
-        console.log(payload.toString());
+        console.log(unmaskedPayload);
+        console.log(unmaskedPayload.toString());
+        console.log('');
+
+
+        console.log('--- send data to cliant ---');
+        // クライアントに送信するフレーム
+        // 1byte: FIN, RSV1-3, OPCODE
+        // 2byte: MASK, Payload長
+        // 3byte以降: PayloadData(unmasked)
+        var sendFrame = new Buffer(2 + payloadLength);
+
+        sendFrame[0] = firstByte;
+        sendFrame[1] = payloadLength;
+        for (var i = 0; i < payloadLength; i++) {
+            sendFrame[i + 2] = unmaskedPayload[i];
+        }
+        console.log(sendFrame);
+
+        // クライアントに送信
+        socket.end(sendFrame);
     })
 });
+
+// マスクされたペイロードをアンマスクして返却
+function unmask(maskKey, payloadLength, payload) {
+    // 4byteづつ処理
+    var maskNum = maskKey.readUInt32BE(0, true);
+    var i = 0;
+    for (; i < payloadLength - 3; i += 4) {
+        var single = maskNum ^ payload.readUInt32BE(i, true);
+        if (single < 0) single = 4294967296 + single;
+        payload.writeUInt32BE(single, i, true);
+    }
+
+    // 余りを処理
+    switch (payloadLength % 4) {
+        case 3: payload[i + 2] = payload[i + 2] ^ maskKey[2];
+        case 2: payload[i + 1] = payload[i + 1] ^ maskKey[1];
+        case 1: payload[i] = payload[i] ^ maskKey[0];
+        case 0:;
+    }
+
+    return payload
+}
+
+
+
 
 server.on('data', function (chunk) {
     console.log(chunk);
