@@ -213,12 +213,6 @@ function unmask(maskKey, payloadLength, payload) {
 }
 
 
-
-
-server.on('data', function (chunk) {
-    console.log(chunk);
-})
-
 server.listen(8080, 'localhost', function () {
     console.log('listening on localhost:8080');
 });
