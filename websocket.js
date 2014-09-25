@@ -8,7 +8,7 @@ ws.onopen = function () {
 
     btn.addEventListener('click', function () {
         var value = document.getElementById('mes').value;
-        ws.send('y.toida');
+        ws.send(value);
         //ws.send(value);
     });
 
